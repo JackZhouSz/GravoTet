@@ -19,9 +19,14 @@ SRC = CODE / "cpp"
 EIGEN = CODE / "deps" / "eigen"
 
 if platform.system() == "Windows":
-    # /GL- disables LTCG whole-program optimisation injected by the Python
-    # build machinery, which triggers an MSVC 14.44 ICE on Eigen sparse templates.
-    extra_compile_args = ["/O2", "/EHsc", "/bigobj", "/GL-"]
+    # Two MSVC workarounds for recent VS 2022 (17.14 / MSVC 14.44) toolsets:
+    #   /GL- disables the LTCG whole-program optimisation injected by the Python
+    #   build machinery, which triggers an ICE on Eigen sparse templates.
+    #   /Ob1 caps inlining at one level. The default /O2 (implicit /Ob2) triggers
+    #   a separate internal compiler error (C1001) during <filesystem>/<execution>
+    #   and Eigen code generation on MSVC 14.44.35207. /Ob1 avoids it and retains
+    #   /O2 speed. Both flags are harmless on toolsets without the bug.
+    extra_compile_args = ["/O2", "/Ob1", "/EHsc", "/bigobj", "/GL-"]
     extra_link_args: list[str] = []
 else:
     extra_compile_args = ["-O3", "-fPIC"]
