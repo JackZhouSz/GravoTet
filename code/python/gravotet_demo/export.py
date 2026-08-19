@@ -1,16 +1,16 @@
 """Hierarchy export utilities for the supplementary demo.
 
 Saves the multigrid hierarchy produced by the C++ solver to disk:
-  - output/meshes/level_{i}.ply  -- ASCII PLY: all vertices (depth attribute:
+  - output/<demo>/meshes/level_{i}.ply  -- ASCII PLY: all vertices (depth attribute:
                                     0=surface, 1=interior) + the actual simplicial
                                     complex triangles (tet boundary faces + free
                                     triangles from allTris).  This matches the full
                                     algorithm output and loads correctly in Blender.
-  - output/meshes/level_{i}.png  -- pyvista offscreen render using nearest-coarse-
+  - output/<demo>/meshes/level_{i}.png  -- pyvista offscreen render using nearest-coarse-
                                     vertex mapping of the fine surface triangles.
                                     Proper Z-buffer rendering; no painter's-algorithm
                                     artifacts.  Hole-free at every coarsening level.
-  - output/prolongations.npz     -- all prolongation operators in CSR format
+  - output/<demo>/prolongations.npz     -- all prolongation operators in CSR format
 
 Render strategy (PNG only):
   Matplotlib has no Z-buffer, so rendering the full non-manifold simplicial complex
@@ -38,11 +38,68 @@ Convention: P[i] maps level i+1 (coarse) to level i (fine), shape (N_fine, N_coa
 
 from __future__ import annotations
 
-import io
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from .topology import first_occurrence_indices, row_multiplicity
+
+
+# ---------------------------------------------------------------------------
+# Optional rendering backend
+# ---------------------------------------------------------------------------
+# pyvista (and the VTK wheel underneath it) is the one dependency that is
+# routinely unavailable: no wheel for the newest CPython, no wheel for less
+# common OS/arch pairs, and no GL context on a headless Linux box.  None of the
+# numerical output depends on it, so every entry point below degrades to
+# "skip the render, keep everything else" instead of aborting the run.
+
+_PYVISTA_STATE: dict = {}
+
+
+def _get_pyvista():
+    """Return the pyvista module, or None if it cannot be used here.
+
+    The outcome is resolved once and cached, and the reason is printed a single
+    time so a run without rendering says plainly why.
+    """
+    if "module" in _PYVISTA_STATE:
+        return _PYVISTA_STATE["module"]
+
+    module = None
+    try:
+        import pyvista as pv
+
+        # Never try to open a window: these renders are always offscreen.
+        pv.OFF_SCREEN = True
+
+        # On a headless Linux box (a CI runner, a server, an SSH session) VTK
+        # has no X display to create a GL context on.  A virtual framebuffer
+        # fixes that when Xvfb is installed; when it is not, the render calls
+        # below are still guarded and the run continues without figures of the
+        # hierarchy.
+        if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+            try:
+                pv.start_xvfb()
+            except Exception:
+                print("  [render] No DISPLAY and no Xvfb available; hierarchy\n"
+                      "  [render] renders may be skipped.  Install xvfb (e.g.\n"
+                      "  [render] 'sudo apt install xvfb') or run under "
+                      "'xvfb-run -a'.", flush=True)
+        module = pv
+    except Exception as exc:  # ImportError, or a VTK load error
+        print(
+            f"  [render] pyvista/VTK unavailable ({type(exc).__name__}: {exc}).\n"
+            f"  [render] Skipping the hierarchy renders; the solve, the plots,\n"
+            f"  [render] data.json and the PLY meshes are still written.",
+            flush=True,
+        )
+
+    _PYVISTA_STATE["module"] = module
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -74,10 +131,7 @@ def _find_boundary_triangles(tets: np.ndarray) -> np.ndarray:
     ])
 
     canonical = np.sort(faces, axis=1)
-    dt = np.dtype([("a", np.int32), ("b", np.int32), ("c", np.int32)])
-    structured = np.ascontiguousarray(canonical).view(dt).reshape(-1)
-    _, inv, counts = np.unique(structured, return_inverse=True, return_counts=True)
-    return faces[counts[inv] == 1].astype(np.int32)
+    return faces[row_multiplicity(canonical) == 1].astype(np.int32)
 
 
 def _simplicial_complex_triangles(
@@ -109,8 +163,7 @@ def _simplicial_complex_triangles(
 
     combined = np.vstack([boundary, free_arr])
     canonical = np.sort(combined, axis=1)
-    _, idx = np.unique(canonical, axis=0, return_index=True)
-    return combined[idx].astype(np.int32)
+    return combined[first_occurrence_indices(canonical)].astype(np.int32)
 
 
 def _surface_by_nearest_coarse(
@@ -215,24 +268,17 @@ def _write_ply(filepath: Path, verts: np.ndarray, tris: np.ndarray,
     header_lines.append("end_header")
     header = "\n".join(header_lines) + "\n"
 
-    vert_buf = io.StringIO()
-    np.savetxt(vert_buf, np.column_stack([verts, depth.astype(np.float64)]),
-               fmt=["%.6g", "%.6g", "%.6g", "%d"])
-    vertex_block = vert_buf.getvalue()
-
-    face_block = ""
-    if num_tris > 0:
-        face_buf = io.StringIO()
-        np.savetxt(face_buf,
-                   np.column_stack([np.full(num_tris, 3, dtype=np.int32), tris]),
-                   fmt="%d")
-        face_block = face_buf.getvalue()
-
+    # Stream straight into the file.  Formatting into an in-memory StringIO
+    # first would hold the entire ASCII mesh as one Python string: for the
+    # 2M-vertex level 0 that is a few hundred megabytes, allocated on top of a
+    # peak the large demos are already close to.
     with open(filepath, "w", newline="\n") as f:
         f.write(header)
-        f.write(vertex_block)
-        if face_block:
-            f.write(face_block)
+        np.savetxt(f, np.column_stack([verts, depth.astype(np.float64)]),
+                   fmt=["%.6g", "%.6g", "%.6g", "%d"])
+        if num_tris > 0:
+            np.savetxt(f, np.column_stack(
+                [np.full(num_tris, 3, dtype=np.int32), tris]), fmt="%d")
 
 
 # ---------------------------------------------------------------------------
@@ -271,8 +317,12 @@ def _render_surface(verts: np.ndarray, tris: np.ndarray,
     title      : text label drawn at the top of the image
     out_path   : destination PNG path
     draw_edges : if True, draw a wireframe edge overlay on the shaded surface
+
+    Does nothing when pyvista/VTK is unavailable.
     """
-    import pyvista as pv
+    pv = _get_pyvista()
+    if pv is None:
+        return
 
     pl = pv.Plotter(off_screen=True, window_size=[750, 750])
     pl.background_color = "white"
@@ -314,21 +364,23 @@ def _render_surface(verts: np.ndarray, tris: np.ndarray,
 def _render_level_strip(solver: Any, output_dir: Path,
                         fine_boundary_tris: np.ndarray,
                         fine_verts: np.ndarray,
-                        exterior_counts: list[int]) -> Path:
+                        exterior_counts: list[int]):
     """Render all hierarchy levels into a single horizontal strip PNG.
 
     Each level shows the exterior surface with edge overlay and vertex count
     below. All levels share the same camera angle for easy visual comparison.
 
-    Returns the path to the generated strip PNG.
+    Returns the path to the generated strip PNG, or None when pyvista/VTK is
+    unavailable.
     """
-    import pyvista as pv
+    pv = _get_pyvista()
+    if pv is None:
+        return None
     from PIL import Image
 
     n_levels = len(solver.all_vertices)
 
     # Collect renders for each level
-    from io import BytesIO
     level_images: list[Image.Image] = []
 
     for i in range(n_levels):
@@ -453,6 +505,8 @@ def save_hierarchy_meshes(solver: Any, output_dir: Path) -> list[Path]:
 
     fine_verts = np.asarray(solver.all_vertices[0], dtype=np.float64)
     fine_tets = np.asarray(solver.all_tetrahedra[0], dtype=np.int32)
+    print(f"  Extracting the boundary surface ({len(fine_tets):,} tets) ...",
+          flush=True)
     fine_boundary_tris = _find_boundary_triangles(fine_tets)
 
     coarse_free_tris = list(solver.all_tris) if hasattr(solver, "all_tris") else []
@@ -462,6 +516,8 @@ def save_hierarchy_meshes(solver: Any, output_dir: Path) -> list[Path]:
     for i in range(n_levels):
         verts = np.asarray(solver.all_vertices[i], dtype=np.float64)
         tets = np.asarray(solver.all_tetrahedra[i], dtype=np.int32)
+        print(f"  Exporting level {i}/{n_levels - 1} "
+              f"({len(verts):,} vertices) ...", flush=True)
 
         # --- PLY: actual algorithm output ---
         if i == 0:
@@ -493,10 +549,21 @@ def save_hierarchy_meshes(solver: Any, output_dir: Path) -> list[Path]:
         title = f"{level_label}\n{len(verts):,} vertices"
         png_path = mesh_dir / f"level_{i}.png"
 
-        _render_surface(verts, render_tris, title, png_path, draw_edges=True)
+        # A render failure (no GL context, driver fault, VTK version quirk)
+        # must not cost the caller the PLY meshes it already has.
+        try:
+            _render_surface(verts, render_tris, title, png_path, draw_edges=True)
+        except Exception as exc:
+            print(f"  [render] level {i} render failed ({type(exc).__name__}: {exc});"
+                  f" continuing.", flush=True)
 
     # --- Strip render: all levels side-by-side with edges ---
-    _render_level_strip(solver, output_dir, fine_boundary_tris, fine_verts, exterior_counts)
+    try:
+        _render_level_strip(solver, output_dir, fine_boundary_tris,
+                            fine_verts, exterior_counts)
+    except Exception as exc:
+        print(f"  [render] hierarchy strip render failed "
+              f"({type(exc).__name__}: {exc}); continuing.", flush=True)
 
     return ply_paths
 

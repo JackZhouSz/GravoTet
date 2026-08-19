@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import matplotlib
+
+# Every figure here is written straight to a PNG, so force the non-interactive
+# Agg backend before pyplot is imported.  Without this, matplotlib may select a
+# GUI backend (MacOSX, TkAgg, Qt) and fail or hang on a headless machine, over
+# SSH, or where Tk is not installed.
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
 import matplotlib.patheffects as path_effects
 import numpy as np
 from matplotlib.ticker import LogFormatterMathtext
@@ -81,7 +89,18 @@ def _plot_convergence(ax, result: dict, title: str) -> None:
         return
 
     relative = residual_history / max(residual_history[0], 1e-30)
-    relative = np.where(relative > 0.0, relative, 1e-16)
+
+    # A diverged solve produces inf or NaN residuals.  `nan > 0.0` is False, so
+    # clamping with np.where would map every NaN onto the floor of the log axis
+    # and draw the failure as a flawless convergence curve.  Plot only the
+    # finite prefix instead, and say on the figure what happened.
+    finite = np.isfinite(relative) & (relative > 0.0)
+    if not finite.all():
+        relative = relative[: int(np.argmin(finite))]
+        if relative.size == 0:
+            ax.text(0.5, 0.5, "solve diverged", ha="center", va="center",
+                    color="red", transform=ax.transAxes)
+            return
 
     time_points = np.concatenate(([0.0], np.cumsum(cycle_time_ms_history) / 1000.0))
     if time_points.size > relative.size:
@@ -122,6 +141,16 @@ def _plot_convergence(ax, result: dict, title: str) -> None:
         alpha=PAPER_LINE_ALPHA,
         zorder=6,
     )
+
+    # Put non-convergence on the artifact itself, not only in the console log:
+    # the figure is what gets looked at and shared.
+    if not result.get("converged", True):
+        ax.text(
+            0.02, 0.04,
+            f"DID NOT CONVERGE ({int(result.get('num_cycles', 0))} cycles)",
+            color="red", fontsize=PAPER_FONT_SIZE - 1,
+            ha="left", va="bottom", transform=ax.transAxes, zorder=10,
+        )
 
     tol = float(result["tolerance"])
     ax.axhline(tol, color="gray", linestyle="--", linewidth=REFERENCE_LINE_WIDTH * 0.8, alpha=0.6)

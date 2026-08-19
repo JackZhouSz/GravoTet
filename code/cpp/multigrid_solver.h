@@ -142,7 +142,12 @@ namespace GravoMG {
         // Build V-cycle hierarchy (operators and factorize coarse solver)
         // Must be called before solveVCycle
         // Returns true if hierarchy was successfully built
-		bool buildVCycleHierarchy(const Eigen::SparseMatrix<double>& A_fine);
+		// Takes the row-major type on purpose: solver.py hands over a scipy
+		// csr_matrix, and a column-major parameter would make pybind11's caster
+		// rebuild the whole operator as a csc_matrix on the Python side first.
+		// On the 2M-vertex biharmonic system that intermediate is over a
+		// gigabyte, allocated purely to be discarded.
+		bool buildVCycleHierarchy(const SparseMatrixCSR& A_fine);
 
         // Solve Ax = b using V-cycle multigrid with Chebyshev-accelerated
         // damped Jacobi smoothing.  Requires buildVCycleHierarchy first.

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix, diags
 
+from .topology import row_multiplicity
+
 POISSON_SHIFT = 1e-3
 BIHARMONIC_REGULARIZER = 0.0
 POISSON_TOL = 1e-8
@@ -44,28 +46,38 @@ def _boundary_vertex_indices(T: np.ndarray) -> np.ndarray:
         T[:, [1, 2, 3]],
     ])
     sorted_faces = np.sort(np.asarray(faces, dtype=np.int32), axis=1)
-    unique_faces, counts = np.unique(sorted_faces, axis=0, return_counts=True)
-    boundary_faces = unique_faces[counts == 1]
+    boundary_faces = sorted_faces[row_multiplicity(sorted_faces) == 1]
     return np.unique(boundary_faces.ravel())
 
 
 def _assemble_stiffness_matrix(V: np.ndarray, T: np.ndarray) -> csr_matrix:
     """Assemble the tetrahedral Laplace stiffness matrix with linear elements."""
+    # Every intermediate here is O(num_tets), and on the 12 M-tet torus each one
+    # is hundreds of megabytes.  They are released as soon as they are consumed
+    # so that the peak is set by the few arrays genuinely alive at once rather
+    # than by all of them together.
     tet_positions = np.asarray(V[T], dtype=np.float64)
     num_tets = int(len(tet_positions))
     ones = np.ones((num_tets, 4, 1), dtype=np.float64)
     affine = np.concatenate((ones, tet_positions), axis=2)
+    del ones
 
     inv_affine = np.linalg.inv(affine)
-    gradients = inv_affine[:, 1:, :]
+    del affine
+    # A copy, not a view: a view would keep the whole inv_affine array alive.
+    gradients = inv_affine[:, 1:, :].copy()
+    del inv_affine
 
     edges = tet_positions[:, 1:, :] - tet_positions[:, :1, :]
+    del tet_positions
     volumes = np.abs(np.linalg.det(edges)) / 6.0
+    del edges
     local_stiffness = volumes[:, None, None] * np.einsum(
         "nij,nik->njk",
         gradients,
         gradients,
     )
+    del gradients, volumes
 
     rows = np.repeat(T, 4, axis=1).ravel()
     cols = np.tile(T, (1, 4)).ravel()
@@ -100,8 +112,14 @@ def _manufactured_solution(V: np.ndarray, cycles: float = 2.0) -> np.ndarray:
 
 
 def _apply_dirichlet(A: csr_matrix, b: np.ndarray, fixed_idx: np.ndarray, fixed_values: np.ndarray) -> tuple[csr_matrix, np.ndarray]:
-    """Apply symmetric Dirichlet elimination while preserving SPD structure."""
-    A = csr_matrix(A)
+    """Apply symmetric Dirichlet elimination while preserving SPD structure.
+
+    Takes ownership of `A`: the constrained rows and columns are zeroed in
+    place rather than through sparse products, which on the large meshes saves
+    several gigabytes.  The caller must not use `A` afterwards; `assemble_problem`
+    below computes the right-hand side before calling this and then discards it.
+    """
+    A = A.tocsr()
     b = np.asarray(b, dtype=np.float64).copy()
 
     if fixed_idx.size == 0:
@@ -109,10 +127,7 @@ def _apply_dirichlet(A: csr_matrix, b: np.ndarray, fixed_idx: np.ndarray, fixed_
 
     rows, _cols = A.get_shape()
     n = int(rows)
-    mask = np.ones(n, dtype=np.float64)
-    mask[fixed_idx] = 0.0
 
-    diag_mask = csr_matrix((mask, (np.arange(n), np.arange(n))), shape=(n, n))
     fixed_ones = np.zeros(n, dtype=np.float64)
     fixed_ones[fixed_idx] = 1.0
     fixed_diag = csr_matrix((fixed_ones, (np.arange(n), np.arange(n))), shape=(n, n))
@@ -120,7 +135,23 @@ def _apply_dirichlet(A: csr_matrix, b: np.ndarray, fixed_idx: np.ndarray, fixed_
     x_fixed = np.zeros(n, dtype=np.float64)
     x_fixed[fixed_idx] = fixed_values
     b -= A @ x_fixed
-    A = diag_mask @ A @ diag_mask
+
+    # Zero the constrained rows and columns in place.  The equivalent
+    # `diag_mask @ A @ diag_mask` builds two full sparse products, each the size
+    # of A; for the 2M-vertex biharmonic operator that is several gigabytes
+    # allocated only to be freed again.
+    is_fixed = np.zeros(n, dtype=bool)
+    is_fixed[fixed_idx] = True
+
+    # Columns: one pass over the nonzeros.
+    A.data *= ~is_fixed[A.indices]
+    # Rows: iterate the constrained vertices rather than materialising a
+    # row index per nonzero, which would itself be an array the size of A.
+    indptr = A.indptr
+    for row in fixed_idx:
+        A.data[indptr[row]:indptr[row + 1]] = 0.0
+    A.eliminate_zeros()
+
     A = A + fixed_diag
     b[fixed_idx] = fixed_values
     return A.tocsr(), b

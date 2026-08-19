@@ -11,11 +11,28 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cstdio>
+
 #include "multigrid_solver.h"
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(gravotet, m) {
+    // The solver logs its progress with std::cout, which is fully buffered
+    // whenever stdout is a pipe or a file rather than a terminal.  Python
+    // buffers its own prints separately, so without this the C++ progress log
+    // is flushed at interpreter exit and appears *after* the final summary.
+    // std::cout is synchronised with C stdio by default, so unbuffering stdout
+    // restores the true ordering of the two streams.  Called before anything
+    // has been written, which is what setvbuf requires.
+    //
+    // _IONBF with size 0 is the only mode every C runtime accepts here: the
+    // Windows UCRT rejects _IOLBF with a size below 2 through its
+    // invalid-parameter handler, which terminates the interpreter outright,
+    // and it maps _IOLBF to full buffering anyway.  The solver logs a few
+    // dozen lines per run, so unbuffered output costs nothing measurable.
+    (void)std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     m.doc() = "Minimal GravoTet MG bindings for the SIGGRAPH supplementary package";
 
     py::class_<GravoMG::TetrahedralMesh>(m, "TetrahedralMesh")

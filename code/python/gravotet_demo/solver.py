@@ -14,13 +14,17 @@ import numpy as np
 
 from .pde import ProblemData
 
+# Coarsening stops once a level falls to this many vertices; a mesh at or below
+# it therefore yields a single-level hierarchy and no V-cycle.
+MIN_VERTS = 200
+
 
 def create_solver(gravotet: Any, mesh: Any, verbose: bool = False):
     """Construct the Ours hierarchy once for the supplied mesh."""
     solver = gravotet.MultigridSolver()
     solver.verbose = verbose
     solver.feature_preserve = True
-    solver.min_verts = 200
+    solver.min_verts = MIN_VERTS
     solver.max_levels = 25
     solver.use_dense_coarse_solver = True
 
@@ -38,7 +42,18 @@ def solve_problem(solver: Any, problem: ProblemData, max_cycles: int = 150) -> d
     ok = solver.build_vcycle_hierarchy(problem.A)
     setup_ms = (time.perf_counter() - setup_start) * 1000.0
     if not ok:
-        raise RuntimeError(f"Failed to build V-cycle hierarchy for {problem.name}")
+        levels = int(solver.num_levels())
+        detail = (
+            f" The hierarchy has {levels} level(s); coarsening stops at "
+            f"min_verts={MIN_VERTS}, so a mesh near or below that size cannot "
+            f"produce a V-cycle. Use a larger mesh."
+            if levels < 2 else
+            f" The hierarchy has {levels} levels, so the Galerkin coarse-grid "
+            f"assembly or the coarse factorisation failed."
+        )
+        raise RuntimeError(
+            f"Failed to build the V-cycle hierarchy for {problem.name}.{detail}"
+        )
 
     result = solver.solve_vcycle(
         b=problem.b,

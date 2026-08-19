@@ -60,7 +60,7 @@ GravoMG::TetMultigridSolver::computeProductRAP(
 // =================================================================================================
 
 bool GravoMG::TetMultigridSolver::buildVCycleHierarchy(
-    const Eigen::SparseMatrix<double> &A_fine) {
+    const SparseMatrixCSR &A_fine) {
   if (verbose) {
     std::cout << "[CPP] buildVCycleHierarchy called" << std::endl;
   }
@@ -89,8 +89,10 @@ bool GravoMG::TetMultigridSolver::buildVCycleHierarchy(
   // Build operators for each level using Galerkin projection
   vcycle_operators_.clear();
   vcycle_operators_.reserve(vcycle_num_levels_);
-  vcycle_operators_.push_back(SparseMatrixCSR(A_fine)); // Level 0 = finest
+  vcycle_operators_.push_back(A_fine); // Level 0 = finest (already CSR)
 
+  // computeProductRAP takes and returns column-major, so the working copy
+  // stays ColMajor; this is the one conversion that is actually needed.
   Eigen::SparseMatrix<double> A_current = A_fine;
   for (size_t i = 0; i < prols.size(); ++i) {
     const auto &P = prols[i];

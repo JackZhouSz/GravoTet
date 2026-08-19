@@ -42,9 +42,24 @@ data/
 # Environments and IDE-local files
 .venv/
 .env
+.vscode/
+.idea/
+.claude/
+CLAUDE.md
+
+# OS metadata
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# Extension build log written by runner.py
+code/python/gravotet_demo/build.log
 
 # Stray logs / smoke-test artifacts
 diag_err.txt
 .eigen_smoke_test*
 header_smoke_test*
 eigen_smoke_test*
+
+# lean-ctx local cache
+.lean-ctx/

@@ -4,10 +4,16 @@
 
 #include <algorithm>
 #include <array>
+// <atomic> used to arrive transitively through <execution>; it is required
+// explicitly now that the parallel-algorithm header is no longer included.
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
-#include <filesystem>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -17,27 +23,105 @@
 #include <queue>
 #include <set>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
-// Check if parallel execution policies are available
-// Apple Clang and older compilers don't support std::execution::par
-// Check if parallel execution policies are available
-// Apple Clang and older compilers don't support std::execution::par
-#if defined(__cpp_lib_parallel_algorithm) &&                                   \
-    __cpp_lib_parallel_algorithm >= 201603L
+// ---------------------------------------------------------------------------
+// Sorting policy
+// ---------------------------------------------------------------------------
+// The C++17 parallel algorithms are deliberately NOT used by default.
+//
+// libstdc++ implements <execution> on top of Intel oneTBB, but it defines
+// __cpp_lib_parallel_algorithm whenever the header exists, regardless of
+// whether a TBB runtime is available to link against.  Guarding on the
+// feature-test macro therefore produces a translation unit that compiles and
+// links cleanly, yet yields a shared object with unresolved TBB symbols.  The
+// failure surfaces only when Python dlopen()s the extension:
+//
+//   ImportError: gravotet.cpython-38-x86_64-linux-gnu.so: undefined symbol:
+//     _ZN3tbb6detail2r15spawnERNS0_2d14taskERNS2_18task_group_contextE
+//
+// Both call sites sort a flat array of packed vertex pairs once per hierarchy
+// level and are not on the critical path, so the serial std::sort is used
+// everywhere.  Builders who have TBB available can opt back in by defining
+// GRAVOTET_USE_PSTL and adding the TBB library to the link line; that
+// configuration is not exercised by the demo drivers.
+#if defined(GRAVOTET_USE_PSTL)
 #include <execution>
-#define HAS_PARALLEL_EXECUTION 1
 #define PARALLEL_SORT(begin, end) std::sort(std::execution::par, begin, end)
 #define PARALLEL_SORT_CMP(begin, end, cmp)                                     \
   std::sort(std::execution::par, begin, end, cmp)
 #else
-#define HAS_PARALLEL_EXECUTION 0
 #define PARALLEL_SORT(begin, end) std::sort(begin, end)
 #define PARALLEL_SORT_CMP(begin, end, cmp) std::sort(begin, end, cmp)
 #endif
+
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
+// Provides _InterlockedExchangeAdd, used by the flat-CSR adjacency build.
+// It has to be included at global scope: it used to sit inside
+// `namespace GravoMG`, where every declaration it and its chained headers make
+// would land in that namespace if nothing else had pulled it in first.
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
+namespace {
+
+/// Create every missing directory in the parent path of `path` ("mkdir -p").
+///
+/// Deliberately avoids <filesystem>, which is a portability liability in all
+/// three toolchains this supplement has to build under: Apple's libc++ marks
+/// every symbol in it unavailable below a macOS 10.15 deployment target (and
+/// CPython builds commonly report 10.14, so the header errors out), GCC 8
+/// keeps the implementation in a separate -lstdc++fs that has to be linked
+/// explicitly, and MSVC 14.44 has been observed to ICE while instantiating it.
+/// A handful of mkdir() calls has none of those problems.
+///
+/// Returns true when the directory exists afterwards.
+bool createParentDirectories(const std::string &path) {
+  const std::string::size_type last = path.find_last_of("/\\");
+  if (last == std::string::npos) {
+    return true; // no directory component
+  }
+  const std::string dir = path.substr(0, last);
+  if (dir.empty()) {
+    return true; // path was absolute with a single leading separator
+  }
+
+  for (std::string::size_type i = 1; i <= dir.size(); ++i) {
+    if (i != dir.size() && dir[i] != '/' && dir[i] != '\\') {
+      continue;
+    }
+    const std::string partial = dir.substr(0, i);
+    // Skip a bare Windows drive specifier such as "C:".
+    if (partial.empty() || partial.back() == ':') {
+      continue;
+    }
+#ifdef _WIN32
+    if (_mkdir(partial.c_str()) != 0 && errno != EEXIST) {
+      return false;
+    }
+#else
+    if (::mkdir(partial.c_str(), 0777) != 0 && errno != EEXIST) {
+      return false;
+    }
+#endif
+  }
+  return true;
+}
+
+} // namespace
 
 // Hash specialization for std::array<int, 3> and std::pair<int, int>
 namespace std {
@@ -908,10 +992,8 @@ void TetMultigridSolver::sortExteriorIndicesByFeature(int level) {
 // Returns Eigen::MatrixXi where each row contains neighbor indices (-1 for no
 // more neighbors)
 
-// Helper for cross-platform atomic fetch-add
-#ifdef _MSC_VER
-#include <intrin.h>
-#endif
+// Helper for cross-platform atomic fetch-add: see the <intrin.h> include at
+// the top of this file, which must stay at global scope.
 
 Eigen::MatrixXi TetMultigridSolver::buildNeighborMatrixFromTetrahedra(
     const Eigen::MatrixXi &tetrahedra, int numVertices) {
@@ -2688,16 +2770,9 @@ void TetMultigridSolver::constructProlongationOurs(
       timingPath = effectiveOutputDir + sep + "hierarchy_timing.json";
     }
   }
-  try {
-    if (!timingPath.empty()) {
-      std::filesystem::path timingPathFs(timingPath);
-      if (timingPathFs.has_parent_path()) {
-        std::filesystem::create_directories(timingPathFs.parent_path());
-      }
-    }
-  } catch (const std::exception &e) {
+  if (!timingPath.empty() && !createParentDirectories(timingPath)) {
     std::cerr << "Warning: failed to create timing output directory for '"
-              << timingPath << "': " << e.what() << "\n";
+              << timingPath << "'\n";
   }
 
   // =========================================================================

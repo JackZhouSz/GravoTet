@@ -1,7 +1,15 @@
+# Required to build the C++ extension, solve, and produce output.png.
+# The demo drivers install these automatically on first run; this file is for
+# installing them by hand, e.g.
+#     python -m pip install -r code/python/gravotet_demo/requirements.txt
 numpy>=1.20
 scipy>=1.7
 matplotlib>=3.5
-pyvista>=0.40
 pybind11>=2.10
 pillow>=9.0
 setuptools>=60
+
+# Optional; see requirements-render.txt.  pyvista/VTK only adds the mesh
+# hierarchy strip to the figure and is deliberately not listed here, because
+# VTK has no wheel for some interpreter/OS/architecture combinations and a
+# failed resolution there must not stop the demo from running.

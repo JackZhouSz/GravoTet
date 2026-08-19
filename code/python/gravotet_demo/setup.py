@@ -29,11 +29,15 @@ if platform.system() == "Windows":
     extra_compile_args = ["/O2", "/Ob1", "/EHsc", "/bigobj", "/GL-"]
     extra_link_args: list[str] = []
 else:
+    # No macOS deployment-target override is needed: the C++ sources use no
+    # library feature that Apple's libc++ marks as availability-limited.  The
+    # <filesystem> dependency that used to force -mmacosx-version-min=10.15 was
+    # replaced by a plain mkdir() helper in multigrid_solver.cpp, so the
+    # interpreter's own deployment target is always sufficient.  Passing the
+    # flag anyway put two conflicting -mmacosx-version-min values on the link
+    # line, which is the kind of thing that breaks on the next toolchain.
     extra_compile_args = ["-O3", "-fPIC"]
     extra_link_args = []
-    if platform.system() == "Darwin":
-        extra_compile_args.append("-mmacosx-version-min=10.15")
-        extra_link_args.append("-mmacosx-version-min=10.15")
 
 PACKAGE_VERSION = "0.1.0"
 

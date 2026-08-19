@@ -18,6 +18,7 @@ maintainer split tool (``scripts/split_meshes.py``) import from here.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 # code/python/gravotet_demo/data_assembly.py -> repository root is parents[3].
@@ -78,30 +79,47 @@ def assemble_mesh(name: str, *, force: bool = False, verbose: bool = True) -> Pa
         )
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    free = shutil.disk_usage(DATA_DIR).free
+    if free < expected_size:
+        raise RuntimeError(
+            f"Not enough free disk space to assemble {filename}: "
+            f"{expected_size / 1e6:.0f} MB needed, {free / 1e6:.0f} MB available "
+            f"in {DATA_DIR}."
+        )
+
     tmp = dest.with_suffix(dest.suffix + ".part")
     if verbose:
-        print(f"  [join] {filename}  <-  {len(parts)} part(s)")
+        print(f"  [join] {filename}  <-  {len(parts)} part(s)", flush=True)
 
+    # Any failure -- a short read, a full disk, Ctrl-C -- must not leave a
+    # partial file behind that a later run would mistake for a real mesh.
     written = 0
-    with open(tmp, "wb") as out:
-        for part in parts:
-            with open(part, "rb") as src:
-                while True:
-                    block = src.read(_IO_BLOCK)
-                    if not block:
-                        break
-                    out.write(block)
-                    written += len(block)
+    try:
+        with open(tmp, "wb") as out:
+            for part in parts:
+                with open(part, "rb") as src:
+                    while True:
+                        block = src.read(_IO_BLOCK)
+                        if not block:
+                            break
+                        out.write(block)
+                        written += len(block)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
     if written != expected_size:
         tmp.unlink(missing_ok=True)
         raise RuntimeError(
-            f"Assembled {filename} has size {written} bytes "
-            f"(expected {expected_size}); parts may be incomplete or corrupt."
+            f"Assembled {filename} has size {written} bytes (expected "
+            f"{expected_size}); the parts under {CHUNK_DIR} are incomplete or "
+            f"corrupt.  Re-download them with 'git checkout -- data_chunks' or "
+            f"a fresh clone, then retry."
         )
     tmp.replace(dest)
     if verbose:
-        print(f"  [ok  ] {filename}  ({written / 1e6:.0f} MB)")
+        print(f"  [ok  ] {filename}  ({written / 1e6:.0f} MB)", flush=True)
     return dest
 
 

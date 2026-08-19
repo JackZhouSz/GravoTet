@@ -1,0 +1,17 @@
+# Optional rendering dependency.
+#
+# pyvista (and the VTK wheel underneath it) is used only to render the mesh
+# hierarchy strip that appears at the bottom of output.png.  Everything else --
+# the build, the solves, data.json, the residual and timing plots -- works
+# without it.
+#
+# It is kept out of requirements.txt because VTK does not publish a wheel for
+# every interpreter, operating system, and architecture combination, and pip
+# can end up with no satisfiable resolution (for example an Intel Mac on a
+# CPython version that predates or postdates the available VTK wheels).  When
+# that happens the demo prints a note and continues without the hierarchy strip.
+#
+# On a headless Linux machine VTK also needs a virtual framebuffer:
+#     sudo apt install xvfb libgl1 libxrender1
+# and either run the demo under `xvfb-run -a` or let the code start Xvfb itself.
+pyvista>=0.44
