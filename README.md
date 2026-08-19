@@ -86,15 +86,20 @@ i9-14900KF CPU with 32 GB of RAM._
 
 ## Requirements and setup
 
-- Python 3.8-3.13
+- Python 3.8 or newer
 - a C++17 compiler: Xcode Command Line Tools (macOS), GCC or Clang (Linux),
   Visual Studio Build Tools (Windows)
 - around 4 GB of free RAM for the 2M-vertex torus demo
 
 On the first run the driver installs any missing Python packages (`numpy`,
-`scipy`, `matplotlib`, `pybind11`, `pyvista`, `pillow`, `setuptools`) and builds
-the local C++ extension via `pybind11`. No conda and no SuiteSparse/CHOLMOD are required:
-the V-cycle uses an Eigen `SimplicialLDLT` as its coarse-grid direct solver.
+`scipy`, `matplotlib`, `pybind11`, `pillow`, `setuptools`) and builds the local
+C++ extension via `pybind11`. To install them by hand instead, run
+`pip install -r code/python/gravotet_demo/requirements.txt`. `pyvista` is
+optional: it only adds the mesh hierarchy strip to the figure, and if no VTK
+wheel exists for your interpreter the demo says so and continues without it.
+(VTK has no Apple Silicon wheel for Python 3.8; use 3.9 or newer there.)
+No conda and no SuiteSparse/CHOLMOD are required: the V-cycle uses an Eigen
+`SimplicialLDLT` as its coarse-grid direct solver.
 
 ## Third-party code and acknowledgments
 

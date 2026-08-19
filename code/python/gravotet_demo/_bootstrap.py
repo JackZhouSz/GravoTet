@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import platform
 import site
 import subprocess
 import sys
@@ -168,6 +169,33 @@ def _reexec_if_needed(modules: dict) -> None:
         pass  # fall through; the import error below will be reported normally
 
 
+def _optional_install_hint() -> str:
+    """Explain a failed pyvista/VTK install and, where possible, how to fix it.
+
+    VTK ships prebuilt binary wheels per (Python version, OS, CPU); pyvista
+    itself is pure Python and always installs.  The gap a reviewer is most
+    likely to hit is Apple Silicon on Python 3.8: no arm64 cp38 VTK wheel has
+    ever been published, so no pyvista version can resolve there.  Saying so is
+    worth a few lines, because otherwise the renders look permanently broken
+    when they are one interpreter upgrade away.
+    """
+    base = (
+        "  pyvista/VTK could not be installed on this interpreter.\n"
+        "  Continuing without it: the demo still solves and still writes\n"
+        "  output.png, but without the mesh-hierarchy strip."
+    )
+    on_apple_silicon = sys.platform == "darwin" and platform.machine() == "arm64"
+    if sys.version_info[:2] < (3, 9) and on_apple_silicon:
+        return base + (
+            "\n  Reason: VTK publishes no Apple Silicon wheel for Python 3.8.\n"
+            "  Re-run under Python 3.9 or newer to get the renders as well."
+        )
+    return base + (
+        "\n  VTK only publishes wheels for selected interpreters; Python 3.9\n"
+        "  or newer has wheels on every platform if you want the renders."
+    )
+
+
 def ensure_dependencies() -> None:
     """Install missing third-party packages into the running interpreter.
 
@@ -205,12 +233,7 @@ def ensure_dependencies() -> None:
         if ok:
             installed_now.update(OPTIONAL)
         else:
-            print(
-                "  pyvista/VTK could not be installed on this interpreter.\n"
-                "  Continuing without it: the demo still solves and still writes\n"
-                "  output.png, but without the mesh-hierarchy strip.",
-                flush=True,
-            )
+            print(_optional_install_hint(), flush=True)
         _refresh_import_paths()
 
     if installed_now:
